@@ -428,61 +428,7 @@ class ChangePasswordDialog(QDialog):
         self.setStyleSheet(LoginDialog.styleSheet(self))
         self.setup_ui()
     
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        layout.setSpacing(15)
-        layout.setContentsMargins(30, 30, 30, 30)
-        
-        title = QLabel("🔄 СМЕНА ПАРОЛЯ")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
-        layout.addWidget(title)
-        
-        form = QFormLayout()
-        form.setSpacing(15)
-        form.setLabelAlignment(Qt.AlignRight)
-        
-        self.username = QLineEdit()
-        self.username.setPlaceholderText("Введите логин")
-        form.addRow("Логин:", self.username)
-        
-        self.old_pass = QLineEdit()
-        self.old_pass.setEchoMode(QLineEdit.Password)
-        self.old_pass.setPlaceholderText("Старый пароль")
-        form.addRow("Старый пароль:", self.old_pass)
-        
-        self.new_pass = QLineEdit()
-        self.new_pass.setEchoMode(QLineEdit.Password)
-        self.new_pass.setPlaceholderText("Новый пароль")
-        form.addRow("Новый пароль:", self.new_pass)
-        
-        self.confirm = QLineEdit()
-        self.confirm.setEchoMode(QLineEdit.Password)
-        self.confirm.setPlaceholderText("Подтверждение")
-        form.addRow("Подтверждение:", self.confirm)
-        
-        layout.addLayout(form)
-        
-        layout.addStretch()
-        
-        info = QLabel("Все поля обязательны для заполнения")
-        info.setStyleSheet("color: #ffd166; font-size: 10px;")
-        info.setAlignment(Qt.AlignCenter)
-        layout.addWidget(info)
-        
-        btn_layout = QHBoxLayout()
-        
-        save_btn = QPushButton("✅ СОХРАНИТЬ")
-        save_btn.clicked.connect(self.save_password)
-        btn_layout.addWidget(save_btn)
-        
-        cancel_btn = QPushButton("✖ ОТМЕНА")
-        cancel_btn.setStyleSheet("background-color: #dc3545; color: white;")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        layout.addLayout(btn_layout)
-        self.setLayout(layout)
+  
     
     def save_password(self):
         username = self.username.text().strip()
