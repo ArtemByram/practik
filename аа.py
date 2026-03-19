@@ -851,31 +851,9 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.table)
         
-        panel = QWidget()
-        panel.setStyleSheet("background-color: white; border-radius: 8px; padding: 10px;")
-        panel_layout = QHBoxLayout(panel)
-        panel_layout.setSpacing(5)  # Уменьшил расстояние между кнопками
         
-        self.add_btn = QPushButton("➕ ДОБАВИТЬ")
-        self.add_btn.setObjectName("addBtn")
-        self.add_btn.setFixedHeight(40)
-        self.add_btn.setFixedWidth(120)
-        self.add_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27ae60;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 15px;
-                font-size: 13px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #229954;
-            }
-        """)
-        self.add_btn.clicked.connect(lambda: self.add_record(self.current_table))
-        panel_layout.addWidget(self.add_btn)
+        
+     
         
         self.edit_btn = QPushButton("✏️ РЕДАКТИРОВАТЬ")
         self.edit_btn.setFixedHeight(40)
