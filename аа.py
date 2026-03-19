@@ -1,7 +1,8 @@
 import sys
 import sqlite3
 import hashlib
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
@@ -9,17 +10,33 @@ from PyQt5.QtGui import *
 class PasswordHasher:
     @staticmethod
     def hash_password(password):
-        return hashlib.sha256(password.encode()).hexdigest()
+        salt = "autoservice_salt_2024"
+        return hashlib.sha256((password + salt).encode()).hexdigest()
     
     @staticmethod
     def verify_password(password, hashed):
-        return hashlib.sha256(password.encode()).hexdigest() == hashed
+        salt = "autoservice_salt_2024"
+        return hashlib.sha256((password + salt).encode()).hexdigest() == hashed
+    
+    @staticmethod
+    def validate_password_strength(password):
+        errors = []
+        if len(password) < 6:
+            errors.append("Минимальная длина 6 символов")
+        if not re.search(r"[A-Z]", password):
+            errors.append("Хотя бы одна заглавная буква")
+        if not re.search(r"[a-z]", password):
+            errors.append("Хотя бы одна строчная буква")
+        if not re.search(r"\d", password):
+            errors.append("Хотя бы одна цифра")
+        return errors
 
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect('autoservice.db')
         self.cursor = self.conn.cursor()
         self.create_tables()
+        self.create_default_admin()
     
     def create_tables(self):
         self.cursor.execute('''
@@ -28,140 +45,39 @@ class Database:
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
                 role TEXT NOT NULL,
-                full_name TEXT
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS clients (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                last_name TEXT NOT NULL,
-                first_name TEXT NOT NULL,
-                middle_name TEXT,
-                phone TEXT,
+                full_name TEXT,
                 email TEXT,
-                address TEXT,
-                created_date TEXT
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cars (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                client_id INTEGER,
-                brand TEXT NOT NULL,
-                model TEXT NOT NULL,
-                year INTEGER,
-                vin TEXT UNIQUE,
-                license_plate TEXT UNIQUE,
-                color TEXT,
-                mileage INTEGER,
-                FOREIGN KEY (client_id) REFERENCES clients (id)
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS employees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                last_name TEXT NOT NULL,
-                first_name TEXT NOT NULL,
-                middle_name TEXT,
-                position TEXT,
                 phone TEXT,
-                email TEXT
+                is_active INTEGER DEFAULT 1,
+                last_login TEXT,
+                created_at TEXT,
+                password_changed_at TEXT,
+                login_attempts INTEGER DEFAULT 0,
+                locked_until TEXT
             )
         ''')
         
         self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS services (
+            CREATE TABLE IF NOT EXISTS login_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT UNIQUE,
-                name TEXT NOT NULL,
-                price REAL,
-                duration INTEGER,
-                category TEXT
+                user_id INTEGER,
+                login_time TEXT,
+                ip_address TEXT,
+                success INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS parts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT UNIQUE,
-                name TEXT NOT NULL,
-                price REAL,
-                quantity INTEGER DEFAULT 0,
-                min_quantity INTEGER DEFAULT 5,
-                supplier TEXT
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_number TEXT UNIQUE,
-                client_id INTEGER,
-                car_id INTEGER,
-                employee_id INTEGER,
-                created_date TEXT,
-                status TEXT,
-                total_cost REAL,
-                payment_status TEXT,
-                notes TEXT,
-                FOREIGN KEY (client_id) REFERENCES clients (id),
-                FOREIGN KEY (car_id) REFERENCES cars (id),
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS order_services (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER,
-                service_id INTEGER,
-                quantity INTEGER DEFAULT 1,
-                price REAL,
-                FOREIGN KEY (order_id) REFERENCES orders (id),
-                FOREIGN KEY (service_id) REFERENCES services (id)
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS order_parts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER,
-                part_id INTEGER,
-                quantity INTEGER DEFAULT 1,
-                price REAL,
-                FOREIGN KEY (order_id) REFERENCES orders (id),
-                FOREIGN KEY (part_id) REFERENCES parts (id)
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS parts_movement (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                part_id INTEGER,
-                type TEXT,
-                quantity INTEGER,
-                date TEXT,
-                order_id INTEGER,
-                notes TEXT,
-                FOREIGN KEY (part_id) REFERENCES parts (id),
-                FOREIGN KEY (order_id) REFERENCES orders (id)
-            )
-        ''')
-        
         self.conn.commit()
-        self.create_default_admin()
     
     def create_default_admin(self):
         admin = self.fetch_one("SELECT * FROM users WHERE username = 'admin'")
         if not admin:
-            hashed = PasswordHasher.hash_password('admin123')
+            hashed = PasswordHasher.hash_password('Admin123')
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.execute_query('''
-                INSERT INTO users (username, password, role, full_name)
-                VALUES (?, ?, ?, ?)
-            ''', ('admin', hashed, 'admin', 'Главный администратор'))
+                INSERT INTO users (username, password, role, full_name, created_at, password_changed_at, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', ('admin', hashed, 'admin', 'Главный администратор', now, now, 1))
     
     def execute_query(self, query, params=()):
         self.cursor.execute(query, params)
@@ -175,17 +91,28 @@ class Database:
     def fetch_one(self, query, params=()):
         self.cursor.execute(query, params)
         return self.cursor.fetchone()
+    
+    def log_login_attempt(self, user_id, success, ip="127.0.0.1"):
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.execute_query('''
+            INSERT INTO login_history (user_id, login_time, ip_address, success)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, now, ip, 1 if success else 0))
 
 class LoginDialog(QDialog):
     def __init__(self, db):
         super().__init__()
         self.db = db
-        self.setWindowTitle("АВТОСЕРВИС")
-        self.setFixedSize(400, 500)
+        self.login_attempts = 0
+        self.setWindowTitle("АВТОСЕРВИС ПРО")
+        self.setFixedSize(400, 550)
+        self.setup_ui()
+    
+    def setup_ui(self):
         self.setStyleSheet("""
             QDialog {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #1a2639, stop:1 #0f1a2f);
                 font-family: 'Segoe UI', Arial;
             }
             QLabel {
@@ -194,19 +121,18 @@ class LoginDialog(QDialog):
             }
             QLineEdit {
                 background-color: rgba(255, 255, 255, 0.95);
-                border: none;
+                border: 2px solid #3a4a6f;
                 border-radius: 8px;
                 padding: 12px;
                 font-size: 14px;
-                color: #333;
+                color: #1a2639;
             }
             QLineEdit:focus {
-                background-color: white;
-                border: 2px solid #ffd166;
+                border: 2px solid #ffb347;
             }
             QPushButton {
-                background-color: #ffd166;
-                color: #333;
+                background-color: #ffb347;
+                color: #1a2639;
                 border: none;
                 border-radius: 8px;
                 padding: 14px;
@@ -214,195 +140,307 @@ class LoginDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #ffc233;
+                background-color: #ffa01e;
             }
-            QPushButton#registerBtn {
-                background-color: #6c757d;
+            QPushButton#secondaryBtn {
+                background-color: #3a4a6f;
                 color: white;
             }
-            QPushButton#registerBtn:hover {
-                background-color: #5a6268;
+            QPushButton#secondaryBtn:hover {
+                background-color: #2a3a5f;
+            }
+            QPushButton#dangerBtn {
+                background-color: #d32f2f;
+                color: white;
+            }
+            QPushButton#dangerBtn:hover {
+                background-color: #b71c1c;
+            }
+            QCheckBox {
+                color: white;
+                font-size: 12px;
             }
         """)
-        self.setup_ui()
-    
-    def setup_ui(self):
+        
         layout = QVBoxLayout()
         layout.setSpacing(20)
         layout.setContentsMargins(30, 40, 30, 30)
         
-        logo = QLabel("🚗 АВТОСЕРВИС")
+        logo = QLabel("🔧 АВТОСЕРВИС ПРО")
         logo.setAlignment(Qt.AlignCenter)
         logo.setStyleSheet("""
             font-size: 28px;
             font-weight: bold;
-            color: white;
+            color: #ffb347;
             margin-bottom: 20px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         """)
         layout.addWidget(logo)
+        
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                background: transparent;
+                border: none;
+            }
+            QTabBar::tab {
+                background: #3a4a6f;
+                color: white;
+                padding: 10px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                font-size: 13px;
+            }
+            QTabBar::tab:selected {
+                background: #ffb347;
+                color: #1a2639;
+                font-weight: bold;
+            }
+        """)
+        
+        login_tab = QWidget()
+        login_layout = QVBoxLayout(login_tab)
+        login_layout.setSpacing(15)
         
         form = QFormLayout()
         form.setSpacing(15)
         form.setLabelAlignment(Qt.AlignRight)
         
         self.username = QLineEdit()
-        self.username.setText("")
         self.username.setPlaceholderText("Введите логин")
         form.addRow("Логин:", self.username)
         
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
-        self.password.setText("")
         self.password.setPlaceholderText("Введите пароль")
         form.addRow("Пароль:", self.password)
         
-        layout.addLayout(form)
+        self.show_password = QCheckBox("Показать пароль")
+        self.show_password.stateChanged.connect(self.toggle_password_visibility)
+        form.addRow("", self.show_password)
         
-        layout.addStretch()
+        login_layout.addLayout(form)
         
-        self.login_btn = QPushButton("🚪 ВОЙТИ В СИСТЕМУ")
+        self.remember_me = QCheckBox("Запомнить меня")
+        login_layout.addWidget(self.remember_me)
+        
+        self.caps_lock_label = QLabel("")
+        self.caps_lock_label.setStyleSheet("color: #ffb347; font-size: 11px;")
+        login_layout.addWidget(self.caps_lock_label)
+        
+        login_layout.addStretch()
+        
+        self.login_btn = QPushButton("🚪 ВОЙТИ")
         self.login_btn.clicked.connect(self.check_login)
-        layout.addWidget(self.login_btn)
+        login_layout.addWidget(self.login_btn)
         
-        self.change_btn = QPushButton("🔄 СМЕНИТЬ ПАРОЛЬ")
-        self.change_btn.setObjectName("registerBtn")
-        self.change_btn.clicked.connect(self.change_password)
-        layout.addWidget(self.change_btn)
+        self.forgot_btn = QPushButton("❓ ЗАБЫЛИ ПАРОЛЬ?")
+        self.forgot_btn.setObjectName("secondaryBtn")
+        self.forgot_btn.clicked.connect(self.forgot_password)
+        login_layout.addWidget(self.forgot_btn)
+        
+        self.tabs.addTab(login_tab, "ВХОД")
+        
+        register_tab = QWidget()
+        register_layout = QVBoxLayout(register_tab)
+        register_layout.setSpacing(15)
+        
+        reg_form = QFormLayout()
+        reg_form.setSpacing(15)
+        reg_form.setLabelAlignment(Qt.AlignRight)
+        
+        self.reg_fullname = QLineEdit()
+        self.reg_fullname.setPlaceholderText("Иванов Иван Иванович")
+        reg_form.addRow("ФИО:*", self.reg_fullname)
+        
+        self.reg_username = QLineEdit()
+        self.reg_username.setPlaceholderText("ivanov")
+        reg_form.addRow("Логин:*", self.reg_username)
+        
+        self.reg_email = QLineEdit()
+        self.reg_email.setPlaceholderText("email@example.com")
+        reg_form.addRow("Email:", self.reg_email)
+        
+        self.reg_phone = QLineEdit()
+        self.reg_phone.setPlaceholderText("+7 (999) 123-45-67")
+        reg_form.addRow("Телефон:", self.reg_phone)
+        
+        self.reg_password = QLineEdit()
+        self.reg_password.setEchoMode(QLineEdit.Password)
+        self.reg_password.setPlaceholderText("Минимум 6 символов")
+        reg_form.addRow("Пароль:*", self.reg_password)
+        
+        self.reg_confirm = QLineEdit()
+        self.reg_confirm.setEchoMode(QLineEdit.Password)
+        reg_form.addRow("Подтверждение:*", self.reg_confirm)
+        
+        self.password_strength = QProgressBar()
+        self.password_strength.setMaximum(4)
+        self.password_strength.setTextVisible(False)
+        self.password_strength.setFixedHeight(5)
+        reg_form.addRow("", self.password_strength)
+        
+        self.password_strength_label = QLabel("")
+        self.password_strength_label.setStyleSheet("color: #ffb347; font-size: 10px;")
+        reg_form.addRow("", self.password_strength_label)
+        
+        self.reg_password.textChanged.connect(self.check_password_strength)
+        
+        register_layout.addLayout(reg_form)
+        
+        register_layout.addStretch()
+        
+        self.register_btn = QPushButton("✅ ЗАРЕГИСТРИРОВАТЬСЯ")
+        self.register_btn.clicked.connect(self.register_user)
+        register_layout.addWidget(self.register_btn)
+        
+        self.tabs.addTab(register_tab, "РЕГИСТРАЦИЯ")
+        
+        layout.addWidget(self.tabs)
         
         self.exit_btn = QPushButton("✖ ВЫХОД")
-        self.exit_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #dc3545;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-        """)
+        self.exit_btn.setObjectName("dangerBtn")
         self.exit_btn.clicked.connect(self.reject)
         layout.addWidget(self.exit_btn)
         
         self.setLayout(layout)
+        
+        self.load_saved_username()
+        
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_CapsLock:
+            self.caps_lock_label.setText("⚠️ CapsLock включен")
+        else:
+            self.caps_lock_label.setText("")
+    
+    def toggle_password_visibility(self):
+        if self.show_password.isChecked():
+            self.password.setEchoMode(QLineEdit.Normal)
+        else:
+            self.password.setEchoMode(QLineEdit.Password)
+    
+    def load_saved_username(self):
+        settings = QSettings("AutoServicePro", "Login")
+        saved_username = settings.value("username", "")
+        if saved_username:
+            self.username.setText(saved_username)
+            self.remember_me.setChecked(True)
+    
+    def check_password_strength(self):
+        password = self.reg_password.text()
+        strength = 0
+        
+        if len(password) >= 6:
+            strength += 1
+        if re.search(r"[A-Z]", password):
+            strength += 1
+        if re.search(r"[a-z]", password):
+            strength += 1
+        if re.search(r"\d", password):
+            strength += 1
+        
+        self.password_strength.setValue(strength)
+        
+        colors = ["#ff4444", "#ff8844", "#ffcc44", "#88cc44", "#44aa44"]
+        self.password_strength.setStyleSheet(f"""
+            QProgressBar::chunk {{
+                background-color: {colors[strength]};
+                border-radius: 2px;
+            }}
+        """)
+        
+        texts = ["Очень слабый", "Слабый", "Средний", "Хороший", "Отличный"]
+        if password:
+            self.password_strength_label.setText(f"Надежность: {texts[strength]}")
+        else:
+            self.password_strength_label.setText("")
     
     def check_login(self):
         username = self.username.text().strip()
         password = self.password.text()
         
         if not username or not password:
-            self.show_error("Ошибка", "Введите логин и пароль")
+            QMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
             return
         
         user = self.db.fetch_one('''
-            SELECT id, username, password, role, full_name 
+            SELECT id, username, password, role, full_name, is_active, login_attempts, locked_until
             FROM users WHERE LOWER(username) = LOWER(?)
         ''', (username,))
         
-        if user and PasswordHasher.verify_password(password, user[2]):
+        if not user:
+            QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+            self.db.log_login_attempt(None, False)
+            return
+        
+        user_id, db_username, db_password, role, full_name, is_active, attempts, locked = user
+        
+        if not is_active:
+            QMessageBox.warning(self, "Ошибка", "Пользователь заблокирован")
+            return
+        
+        if locked:
+            locked_time = datetime.strptime(locked, "%Y-%m-%d %H:%M:%S")
+            if datetime.now() < locked_time:
+                remaining = (locked_time - datetime.now()).seconds // 60
+                QMessageBox.warning(self, "Ошибка", f"Аккаунт заблокирован. Повторите через {remaining} мин.")
+                return
+            else:
+                self.db.execute_query("UPDATE users SET locked_until = NULL, login_attempts = 0 WHERE id = ?", (user_id,))
+        
+        if PasswordHasher.verify_password(password, db_password):
+            self.db.execute_query("UPDATE users SET last_login = ?, login_attempts = 0 WHERE id = ?", 
+                                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+            self.db.log_login_attempt(user_id, True)
+            
+            if self.remember_me.isChecked():
+                settings = QSettings("AutoServicePro", "Login")
+                settings.setValue("username", username)
+            
             self.user_data = {
-                'id': user[0],
-                'username': user[1],
-                'role': user[3],
-                'full_name': user[4]
+                'id': user_id,
+                'username': username,
+                'role': role,
+                'full_name': full_name
             }
             self.accept()
         else:
-            self.show_error("Ошибка", "Неверный логин или пароль")
+            attempts += 1
+            if attempts >= 3:
+                lock_time = datetime.now() + timedelta(minutes=15)
+                self.db.execute_query("UPDATE users SET locked_until = ?, login_attempts = ? WHERE id = ?", 
+                                    (lock_time.strftime("%Y-%m-%d %H:%M:%S"), attempts, user_id))
+                QMessageBox.warning(self, "Ошибка", "Аккаунт заблокирован на 15 минут")
+            else:
+                self.db.execute_query("UPDATE users SET login_attempts = ? WHERE id = ?", (attempts, user_id))
+                remaining = 3 - attempts
+                QMessageBox.warning(self, "Ошибка", f"Неверный пароль. Осталось попыток: {remaining}")
+            
+            self.db.log_login_attempt(user_id, False)
     
-    def show_register(self):
-        dialog = RegisterDialog(self.db)
-        if dialog.exec_():
-            QMessageBox.information(self, "Успех", "Пользователь зарегистрирован. Теперь вы можете войти.")
-    
-    def change_password(self):
-        dialog = ChangePasswordDialog(self.db)
-        dialog.exec_()
-    
-    def show_error(self, title, message):
-        QMessageBox.warning(self, title, message)
-
-class RegisterDialog(QDialog):
-    def __init__(self, db):
-        super().__init__()
-        self.db = db
-        self.setWindowTitle("Регистрация нового пользователя")
-        self.setFixedSize(400, 500)
-        self.setStyleSheet(LoginDialog.styleSheet(self))
-        self.setup_ui()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        layout.setSpacing(15)
-        layout.setContentsMargins(30, 30, 30, 30)
+    def register_user(self):
+        fullname = self.reg_fullname.text().strip()
+        username = self.reg_username.text().strip()
+        email = self.reg_email.text().strip()
+        phone = self.reg_phone.text().strip()
+        password = self.reg_password.text()
+        confirm = self.reg_confirm.text()
         
-        title = QLabel("📝 РЕГИСТРАЦИЯ НОВОГО ПОЛЬЗОВАТЕЛЯ")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: white; margin-bottom: 10px;")
-        layout.addWidget(title)
-        
-        form = QFormLayout()
-        form.setSpacing(15)
-        form.setLabelAlignment(Qt.AlignRight)
-        
-        self.full_name = QLineEdit()
-        self.full_name.setPlaceholderText("Иванов Иван Иванович")
-        form.addRow("ФИО:*", self.full_name)
-        
-        self.username = QLineEdit()
-        self.username.setPlaceholderText("ivanov")
-        form.addRow("Логин:*", self.username)
-        
-        self.password = QLineEdit()
-        self.password.setEchoMode(QLineEdit.Password)
-        self.password.setPlaceholderText("******")
-        form.addRow("Пароль:*", self.password)
-        
-        self.confirm = QLineEdit()
-        self.confirm.setEchoMode(QLineEdit.Password)
-        self.confirm.setPlaceholderText("******")
-        form.addRow("Подтверждение:*", self.confirm)
-        
-        self.role = QComboBox()
-        self.role.addItems(["manager", "admin"])
-        form.addRow("Роль:", self.role)
-        
-        layout.addLayout(form)
-        
-        layout.addStretch()
-        
-        info = QLabel("Поля, отмеченные *, обязательны для заполнения")
-        info.setStyleSheet("color: #ffd166; font-size: 10px;")
-        info.setAlignment(Qt.AlignCenter)
-        layout.addWidget(info)
-        
-        btn_layout = QHBoxLayout()
-        
-        save_btn = QPushButton("✅ ЗАРЕГИСТРИРОВАТЬ")
-        save_btn.setObjectName("addBtn")
-        save_btn.clicked.connect(self.register)
-        btn_layout.addWidget(save_btn)
-        
-        cancel_btn = QPushButton("✖ ОТМЕНА")
-        cancel_btn.setStyleSheet("background-color: #dc3545; color: white;")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        layout.addLayout(btn_layout)
-        self.setLayout(layout)
-    
-    def register(self):
-        full_name = self.full_name.text().strip()
-        username = self.username.text().strip()
-        password = self.password.text()
-        confirm = self.confirm.text()
-        role = self.role.currentText()
-        
-        if not all([full_name, username, password, confirm]):
+        if not all([fullname, username, password, confirm]):
             QMessageBox.warning(self, "Ошибка", "Заполните все обязательные поля")
             return
         
         if password != confirm:
             QMessageBox.warning(self, "Ошибка", "Пароли не совпадают")
+            return
+        
+        strength_errors = PasswordHasher.validate_password_strength(password)
+        if strength_errors:
+            QMessageBox.warning(self, "Ошибка", "Пароль слишком простой:\n" + "\n".join(strength_errors))
+            return
+        
+        if email and not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            QMessageBox.warning(self, "Ошибка", "Некорректный email")
             return
         
         existing = self.db.fetch_one("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
@@ -411,40 +449,71 @@ class RegisterDialog(QDialog):
             return
         
         hashed = PasswordHasher.hash_password(password)
-        self.db.execute_query('''
-            INSERT INTO users (username, password, role, full_name)
-            VALUES (?, ?, ?, ?)
-        ''', (username, hashed, role, full_name))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        QMessageBox.information(self, "Успех", "Пользователь успешно зарегистрирован")
-        self.accept()
+        self.db.execute_query('''
+            INSERT INTO users (username, password, role, full_name, email, phone, created_at, password_changed_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (username, hashed, 'manager', fullname, email, phone, now, now, 1))
+        
+        QMessageBox.information(self, "Успех", "Регистрация прошла успешно!\nТеперь вы можете войти.")
+        self.tabs.setCurrentIndex(0)
+        self.username.setText(username)
+        self.password.clear()
+    
+    def forgot_password(self):
+        username = self.username.text().strip()
+        if not username:
+            QMessageBox.warning(self, "Ошибка", "Введите логин")
+            return
+        
+        user = self.db.fetch_one("SELECT id, email FROM users WHERE username = ?", (username,))
+        if not user:
+            QMessageBox.warning(self, "Ошибка", "Пользователь не найден")
+            return
+        
+        if not user[1]:
+            QMessageBox.warning(self, "Ошибка", "У пользователя не указан email")
+            return
+        
+        QMessageBox.information(self, "Восстановление пароля", 
+                              f"Инструкция по восстановлению отправлена на {user[1]}\n\n(Демо-режим: используйте 'password' как временный пароль)")
+        
+        temp_password = "password"
+        hashed = PasswordHasher.hash_password(temp_password)
+        self.db.execute_query("UPDATE users SET password = ?, password_changed_at = ? WHERE id = ?", 
+                            (hashed, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user[0]))
 
 class ChangePasswordDialog(QDialog):
-    def __init__(self, db):
+    def __init__(self, db, user_id=None, username=None):
         super().__init__()
         self.db = db
+        self.user_id = user_id
+        self.username = username
         self.setWindowTitle("Смена пароля")
-        self.setFixedSize(350, 400)
-        self.setStyleSheet(LoginDialog.styleSheet(self))
+        self.setFixedSize(380, 450)
         self.setup_ui()
     
     def setup_ui(self):
+        self.setStyleSheet(LoginDialog.styleSheet(self))
+        
         layout = QVBoxLayout()
         layout.setSpacing(15)
         layout.setContentsMargins(30, 30, 30, 30)
         
         title = QLabel("🔄 СМЕНА ПАРОЛЯ")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffb347;")
         layout.addWidget(title)
         
         form = QFormLayout()
         form.setSpacing(15)
         form.setLabelAlignment(Qt.AlignRight)
         
-        self.username = QLineEdit()
-        self.username.setPlaceholderText("Введите логин")
-        form.addRow("Логин:", self.username)
+        if not self.user_id:
+            self.username_edit = QLineEdit()
+            self.username_edit.setPlaceholderText("Введите логин")
+            form.addRow("Логин:", self.username_edit)
         
         self.old_pass = QLineEdit()
         self.old_pass.setEchoMode(QLineEdit.Password)
@@ -461,14 +530,29 @@ class ChangePasswordDialog(QDialog):
         self.confirm.setPlaceholderText("Подтверждение")
         form.addRow("Подтверждение:", self.confirm)
         
+        self.show_pass = QCheckBox("Показать пароли")
+        self.show_pass.stateChanged.connect(self.toggle_visibility)
+        form.addRow("", self.show_pass)
+        
+        self.strength_bar = QProgressBar()
+        self.strength_bar.setMaximum(4)
+        self.strength_bar.setTextVisible(False)
+        self.strength_bar.setFixedHeight(5)
+        form.addRow("", self.strength_bar)
+        
+        self.strength_label = QLabel("")
+        self.strength_label.setStyleSheet("color: #ffb347; font-size: 10px;")
+        form.addRow("", self.strength_label)
+        
+        self.new_pass.textChanged.connect(self.check_strength)
+        
         layout.addLayout(form)
         
         layout.addStretch()
         
-        info = QLabel("Все поля обязательны для заполнения")
-        info.setStyleSheet("color: #ffd166; font-size: 10px;")
-        info.setAlignment(Qt.AlignCenter)
-        layout.addWidget(info)
+        rules = QLabel("• Минимум 6 символов\n• Заглавные и строчные буквы\n• Хотя бы одна цифра")
+        rules.setStyleSheet("color: #aaa; font-size: 10px; padding: 5px; background: #2a3a5f; border-radius: 5px;")
+        layout.addWidget(rules)
         
         btn_layout = QHBoxLayout()
         
@@ -477,41 +561,91 @@ class ChangePasswordDialog(QDialog):
         btn_layout.addWidget(save_btn)
         
         cancel_btn = QPushButton("✖ ОТМЕНА")
-        cancel_btn.setStyleSheet("background-color: #dc3545; color: white;")
+        cancel_btn.setObjectName("dangerBtn")
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         
         layout.addLayout(btn_layout)
         self.setLayout(layout)
     
+    def toggle_visibility(self):
+        mode = QLineEdit.Normal if self.show_pass.isChecked() else QLineEdit.Password
+        self.old_pass.setEchoMode(mode)
+        self.new_pass.setEchoMode(mode)
+        self.confirm.setEchoMode(mode)
+    
+    def check_strength(self):
+        password = self.new_pass.text()
+        strength = 0
+        
+        if len(password) >= 6:
+            strength += 1
+        if re.search(r"[A-Z]", password):
+            strength += 1
+        if re.search(r"[a-z]", password):
+            strength += 1
+        if re.search(r"\d", password):
+            strength += 1
+        
+        self.strength_bar.setValue(strength)
+        
+        colors = ["#ff4444", "#ff8844", "#ffcc44", "#88cc44", "#44aa44"]
+        self.strength_bar.setStyleSheet(f"""
+            QProgressBar::chunk {{
+                background-color: {colors[strength]};
+                border-radius: 2px;
+            }}
+        """)
+        
+        texts = ["Очень слабый", "Слабый", "Средний", "Хороший", "Отличный"]
+        if password:
+            self.strength_label.setText(f"Надежность: {texts[strength]}")
+        else:
+            self.strength_label.setText("")
+    
     def save_password(self):
-        username = self.username.text().strip()
-        old = self.old_pass.text()
-        new = self.new_pass.text()
+        if not self.user_id:
+            username = self.username_edit.text().strip()
+            if not username:
+                QMessageBox.warning(self, "Ошибка", "Введите логин")
+                return
+            
+            user = self.db.fetch_one("SELECT id, password FROM users WHERE username = ?", (username,))
+            if not user:
+                QMessageBox.warning(self, "Ошибка", "Пользователь не найден")
+                return
+            user_id = user[0]
+            old_hashed = user[1]
+        else:
+            user_id = self.user_id
+            user = self.db.fetch_one("SELECT password FROM users WHERE id = ?", (user_id,))
+            old_hashed = user[0] if user else None
+        
+        old_pass = self.old_pass.text()
+        new_pass = self.new_pass.text()
         confirm = self.confirm.text()
         
-        if not all([username, old, new, confirm]):
+        if not all([old_pass, new_pass, confirm]):
             QMessageBox.warning(self, "Ошибка", "Заполните все поля")
             return
         
-        if new != confirm:
-            QMessageBox.warning(self, "Ошибка", "Новые пароли не совпадают")
-            return
-        
-        user = self.db.fetch_one('''
-            SELECT id, password FROM users WHERE LOWER(username) = LOWER(?)
-        ''', (username,))
-        
-        if not user:
-            QMessageBox.warning(self, "Ошибка", "Пользователь не найден")
-            return
-        
-        if not PasswordHasher.verify_password(old, user[1]):
+        if not PasswordHasher.verify_password(old_pass, old_hashed):
             QMessageBox.warning(self, "Ошибка", "Неверный старый пароль")
             return
         
-        hashed = PasswordHasher.hash_password(new)
-        self.db.execute_query('UPDATE users SET password = ? WHERE id = ?', (hashed, user[0]))
+        if new_pass != confirm:
+            QMessageBox.warning(self, "Ошибка", "Новые пароли не совпадают")
+            return
+        
+        errors = PasswordHasher.validate_password_strength(new_pass)
+        if errors:
+            QMessageBox.warning(self, "Ошибка", "Пароль слишком простой:\n" + "\n".join(errors))
+            return
+        
+        hashed = PasswordHasher.hash_password(new_pass)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.db.execute_query("UPDATE users SET password = ?, password_changed_at = ? WHERE id = ?", 
+                            (hashed, now, user_id))
         
         QMessageBox.information(self, "Успех", "Пароль успешно изменен")
         self.accept()
